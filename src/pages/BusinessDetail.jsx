@@ -1,15 +1,21 @@
+import { useState, lazy, Suspense } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   ArrowLeft, MapPin, Phone, Clock, Bookmark, BookmarkCheck,
-  Tag, BadgeCheck, Star, Calendar,
+  Tag, BadgeCheck, Star, Calendar, Loader2,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import StarRating from '../components/StarRating';
 import ReviewForm from '../components/ReviewForm';
-import { CATEGORIES } from '../data/businesses';
+import { CATEGORIES, CATEGORY_COLORS } from '../data/businesses';
 
-function DealCard({ deal, index }) {
+// Lazy-load heavy 3D + map components
+const BusinessPin3D = lazy(() => import('../components/BusinessPin3D'));
+const MiniMap = lazy(() => import('../components/MiniMap'));
+
+// ── Deal card with copy-to-clipboard ─────────────────────────────────────────
+function DealCard({ deal, accentColor, index }) {
   const [copied, setCopied] = useState(false);
 
   const copy = () => {
@@ -26,7 +32,11 @@ function DealCard({ deal, index }) {
       initial={{ opacity: 0, x: -20 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ delay: index * 0.1 }}
-      className="glass rounded-xl p-4 border border-green-500/20"
+      className="rounded-xl p-4"
+      style={{
+        background: '#22c55e10',
+        border: '1px solid #22c55e33',
+      }}
       aria-label={`Deal: ${deal.title}`}
     >
       <div className="flex items-start justify-between gap-2">
@@ -38,18 +48,24 @@ function DealCard({ deal, index }) {
           <p className="text-slate-300 text-sm mt-1">{deal.description}</p>
           <div className="flex items-center gap-1.5 mt-2 text-xs text-slate-500">
             <Calendar size={11} aria-hidden="true" />
-            <span>Expires {new Date(deal.expires).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+            <span>
+              Expires{' '}
+              {new Date(deal.expires).toLocaleDateString('en-US', {
+                month: 'short', day: 'numeric', year: 'numeric',
+              })}
+            </span>
           </div>
         </div>
         {deal.code && (
           <button
             onClick={copy}
             aria-label={copied ? 'Code copied!' : `Copy coupon code ${deal.code}`}
-            className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all ${
+            className="flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all"
+            style={
               copied
-                ? 'bg-green-600/20 border-green-500 text-green-400'
-                : 'bg-white/5 border-white/10 text-slate-300 hover:border-green-500/50 hover:text-green-400'
-            }`}
+                ? { background: '#22c55e22', borderColor: '#22c55e', color: '#22c55e' }
+                : { background: 'rgba(255,255,255,0.05)', borderColor: 'rgba(255,255,255,0.1)', color: '#cbd5e1' }
+            }
           >
             {copied ? '✓ Copied!' : deal.code}
           </button>
@@ -59,9 +75,7 @@ function DealCard({ deal, index }) {
   );
 }
 
-// Need to import useState for DealCard
-import { useState } from 'react';
-
+// ── Review card ───────────────────────────────────────────────────────────────
 function ReviewCard({ review, index }) {
   return (
     <motion.article
@@ -83,6 +97,19 @@ function ReviewCard({ review, index }) {
   );
 }
 
+// ── Lazy fallback ─────────────────────────────────────────────────────────────
+function SpinnerBox({ height = 180 }) {
+  return (
+    <div
+      className="flex items-center justify-center glass rounded-2xl"
+      style={{ height }}
+    >
+      <Loader2 size={20} className="animate-spin text-slate-500" aria-hidden="true" />
+    </div>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
 export default function BusinessDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -102,23 +129,24 @@ export default function BusinessDetail() {
   }
 
   const category = CATEGORIES.find((c) => c.id === business.category);
+  const accentColor = CATEGORY_COLORS[business.category] || '#6366f1';
 
   return (
     <main className="min-h-screen pt-24 pb-16 px-4 max-w-4xl mx-auto" id="main-content">
-      {/* Back button */}
+      {/* Back */}
       <motion.button
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         onClick={() => navigate(-1)}
         className="flex items-center gap-1.5 text-slate-400 hover:text-white text-sm mb-6 transition-colors"
-        aria-label="Go back to previous page"
+        aria-label="Go back"
       >
         <ArrowLeft size={16} aria-hidden="true" />
         Back
       </motion.button>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* ── Left: Main Info ── */}
+        {/* ── LEFT: main info ── */}
         <div className="lg:col-span-2 space-y-6">
           {/* Hero image */}
           <motion.div
@@ -132,34 +160,30 @@ export default function BusinessDetail() {
               className="w-full h-full object-cover"
             />
             <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent" aria-hidden="true" />
-            <div className="absolute bottom-4 left-4 right-4">
-              <div className="flex items-end justify-between">
-                <div>
-                  <h1 className="text-2xl font-black text-white">
-                    {business.name}
-                    {business.verified && (
-                      <BadgeCheck size={20} className="inline ml-2 text-indigo-400" aria-label="Verified business" />
-                    )}
-                  </h1>
-                  <p className="text-slate-300 text-sm">{category?.icon} {category?.label}</p>
-                </div>
-                <button
-                  onClick={() => toggleBookmark(business.id)}
-                  aria-label={isBookmarked ? 'Remove from favorites' : 'Save to favorites'}
-                  aria-pressed={isBookmarked}
-                  className="p-2.5 glass rounded-xl hover:bg-white/20 transition-colors"
-                >
-                  {isBookmarked ? (
-                    <BookmarkCheck size={20} className="text-indigo-400" aria-hidden="true" />
-                  ) : (
-                    <Bookmark size={20} className="text-white" aria-hidden="true" />
+            <div className="absolute bottom-4 left-4 right-4 flex items-end justify-between">
+              <div>
+                <h1 className="text-2xl font-black text-white">
+                  {business.name}
+                  {business.verified && (
+                    <BadgeCheck size={20} className="inline ml-2 text-indigo-400" aria-label="Verified" />
                   )}
-                </button>
+                </h1>
+                <p className="text-slate-300 text-sm">{category?.icon} {category?.label}</p>
               </div>
+              <button
+                onClick={() => toggleBookmark(business.id)}
+                aria-label={isBookmarked ? 'Remove from favorites' : 'Save to favorites'}
+                aria-pressed={isBookmarked}
+                className="p-2.5 glass rounded-xl hover:bg-white/20 transition-colors"
+              >
+                {isBookmarked
+                  ? <BookmarkCheck size={20} className="text-indigo-400" aria-hidden="true" />
+                  : <Bookmark size={20} className="text-white" aria-hidden="true" />}
+              </button>
             </div>
           </motion.div>
 
-          {/* Stars + tags */}
+          {/* Rating + description + tags */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -173,7 +197,12 @@ export default function BusinessDetail() {
                 <span
                   key={tag}
                   role="listitem"
-                  className="text-xs bg-indigo-950/60 text-indigo-300 border border-indigo-800/40 px-2.5 py-1 rounded-full"
+                  className="text-xs px-2.5 py-1 rounded-full border"
+                  style={{
+                    background: accentColor + '18',
+                    color: accentColor,
+                    borderColor: accentColor + '44',
+                  }}
                 >
                   {tag}
                 </span>
@@ -181,32 +210,70 @@ export default function BusinessDetail() {
             </div>
           </motion.div>
 
-          {/* Contact info */}
+          {/* Contact & hours */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.15 }}
             className="glass rounded-2xl p-5 space-y-3"
-            aria-label="Business contact information"
+            aria-label="Contact information"
           >
             <h2 className="font-bold text-white">Contact & Hours</h2>
             <div className="space-y-2 text-sm">
               <div className="flex items-center gap-2 text-slate-300">
-                <MapPin size={15} className="text-indigo-400 flex-shrink-0" aria-hidden="true" />
+                <MapPin size={15} className="flex-shrink-0" style={{ color: accentColor }} aria-hidden="true" />
                 <span>{business.address}</span>
               </div>
               <div className="flex items-center gap-2 text-slate-300">
-                <Phone size={15} className="text-indigo-400 flex-shrink-0" aria-hidden="true" />
-                <a href={`tel:${business.phone}`} className="hover:text-indigo-400 transition-colors" aria-label={`Call ${business.name} at ${business.phone}`}>
+                <Phone size={15} className="flex-shrink-0" style={{ color: accentColor }} aria-hidden="true" />
+                <a href={`tel:${business.phone}`} className="hover:text-indigo-400 transition-colors">
                   {business.phone}
                 </a>
               </div>
               <div className="flex items-center gap-2 text-slate-300">
-                <Clock size={15} className="text-indigo-400 flex-shrink-0" aria-hidden="true" />
+                <Clock size={15} className="flex-shrink-0" style={{ color: accentColor }} aria-hidden="true" />
                 <span>{business.hours}</span>
               </div>
             </div>
           </motion.div>
+
+          {/* 3D Location Pin + Mini Map */}
+          <motion.section
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.18 }}
+            className="glass rounded-2xl overflow-hidden"
+            aria-labelledby="location-heading"
+          >
+            <div className="p-4 pb-0">
+              <h2 id="location-heading" className="font-bold text-white flex items-center gap-2">
+                <MapPin size={16} style={{ color: accentColor }} aria-hidden="true" />
+                Location
+              </h2>
+            </div>
+
+            {/* 3D pin + mini map side by side on wider screens */}
+            <div className="flex flex-col sm:flex-row">
+              {/* Three.js 3D pin */}
+              <div className="sm:w-44 flex-shrink-0 flex items-center justify-center p-2">
+                <Suspense fallback={<SpinnerBox height={200} />}>
+                  <BusinessPin3D color={accentColor} emoji={category?.icon || '📍'} />
+                </Suspense>
+              </div>
+
+              {/* Mini Leaflet map */}
+              <div className="flex-1" style={{ minHeight: '220px' }}>
+                <Suspense fallback={<SpinnerBox height={220} />}>
+                  <MiniMap
+                    coords={business.coords}
+                    name={business.name}
+                    color={accentColor}
+                    emoji={category?.icon || '📍'}
+                  />
+                </Suspense>
+              </div>
+            </div>
+          </motion.section>
 
           {/* Deals */}
           {business.deals.length > 0 && (
@@ -222,22 +289,21 @@ export default function BusinessDetail() {
               </h2>
               <div className="space-y-3">
                 {business.deals.map((deal, i) => (
-                  <DealCard key={deal.id} deal={deal} index={i} />
+                  <DealCard key={deal.id} deal={deal} accentColor={accentColor} index={i} />
                 ))}
               </div>
             </motion.section>
           )}
 
-          {/* Reviews section */}
+          {/* Reviews */}
           <section aria-labelledby="reviews-heading">
             <h2 id="reviews-heading" className="font-bold text-white mb-3 flex items-center gap-2">
               <Star size={16} className="text-amber-400" aria-hidden="true" />
               Reviews ({reviews.length})
             </h2>
-
             {reviews.length === 0 ? (
               <div className="glass rounded-2xl p-6 text-center text-slate-500">
-                <p>No reviews yet. Be the first to leave one!</p>
+                No reviews yet — be the first!
               </div>
             ) : (
               <div className="space-y-3" role="list" aria-label="Customer reviews">
@@ -251,7 +317,7 @@ export default function BusinessDetail() {
           </section>
         </div>
 
-        {/* ── Right: Review Form ── */}
+        {/* ── RIGHT: review form ── */}
         <aside className="lg:col-span-1" aria-label="Submit a review">
           <div className="sticky top-24">
             <ReviewForm businessId={parseInt(id)} />

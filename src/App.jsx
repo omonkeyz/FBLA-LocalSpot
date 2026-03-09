@@ -32,7 +32,7 @@ export default function App() {
             <Route path="/browse" element={<Browse />} />
             <Route path="/business/:id" element={<BusinessDetail />} />
             <Route path="/deals" element={<Deals />} />
-            <Route path="/favorites" element={<Favorites />} />
+            <Route path="/saved" element={<Favorites />} />
           </Routes>
         </AnimatePresence>
       </AppProvider>

@@ -1,4 +1,4 @@
-// Sample local business data for the app
+// Sample local business data — Springfield, MO area
 export const CATEGORIES = [
   { id: 'all', label: 'All', icon: '🏪' },
   { id: 'food', label: 'Food & Drink', icon: '🍔' },
@@ -8,6 +8,17 @@ export const CATEGORIES = [
   { id: 'entertainment', label: 'Entertainment', icon: '🎭' },
   { id: 'education', label: 'Education', icon: '📚' },
 ];
+
+// Per-category accent colors — used by 3D pin and map markers
+export const CATEGORY_COLORS = {
+  food: '#f97316',
+  retail: '#ec4899',
+  services: '#06b6d4',
+  health: '#22c55e',
+  entertainment: '#a855f7',
+  education: '#eab308',
+  all: '#6366f1',
+};
 
 export const INITIAL_BUSINESSES = [
   {
@@ -21,6 +32,7 @@ export const INITIAL_BUSINESSES = [
     image: "https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?w=600&auto=format&fit=crop&q=80",
     rating: 4.7,
     reviewCount: 128,
+    coords: [37.2115, -93.2985],
     deals: [
       { id: 1, title: "Student Discount", description: "Show your student ID for 10% off any drink!", expires: "2026-12-31", code: "STUDENT10" },
       { id: 2, title: "Happy Hour", description: "Buy one get one 50% off lattes, 2–4pm daily", expires: "2026-12-31", code: null },
@@ -40,6 +52,7 @@ export const INITIAL_BUSINESSES = [
     image: "https://images.unsplash.com/photo-1487530811015-780d4e5cde5b?w=600&auto=format&fit=crop&q=80",
     rating: 4.9,
     reviewCount: 87,
+    coords: [37.2076, -93.2912],
     deals: [
       { id: 3, title: "Spring Sale", description: "20% off all custom arrangements this month!", expires: "2026-05-31", code: "SPRING20" },
     ],
@@ -58,6 +71,7 @@ export const INITIAL_BUSINESSES = [
     image: "https://images.unsplash.com/photo-1588702547923-7093a6c3ba33?w=600&auto=format&fit=crop&q=80",
     rating: 4.5,
     reviewCount: 210,
+    coords: [37.2134, -93.2858],
     deals: [
       { id: 4, title: "Screen Repair Special", description: "Phone screen repair starting at $49 — mention this deal!", expires: "2026-08-31", code: "SCREEN49" },
     ],
@@ -76,8 +90,9 @@ export const INITIAL_BUSINESSES = [
     image: "https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=600&auto=format&fit=crop&q=80",
     rating: 4.8,
     reviewCount: 65,
+    coords: [37.2089, -93.3012],
     deals: [
-      { id: 5, title: "First Week Free", description: "New members get their first week of unlimited classes free!", expires: "2026-12-31", code: "FREWEEK" },
+      { id: 5, title: "First Week Free", description: "New members get their first week of unlimited classes free!", expires: "2026-12-31", code: "FREEWEEK" },
       { id: 6, title: "Bring a Friend", description: "Refer a friend and both get 50% off next month", expires: "2026-12-31", code: "FRIENDS50" },
     ],
     tags: ["Yoga", "Meditation", "Wellness", "Beginner Friendly"],
@@ -95,6 +110,7 @@ export const INITIAL_BUSINESSES = [
     image: "https://images.unsplash.com/photo-1579783901586-d88db74b4fe4?w=600&auto=format&fit=crop&q=80",
     rating: 4.6,
     reviewCount: 43,
+    coords: [37.2057, -93.2934],
     deals: [
       { id: 7, title: "Group Rate", description: "Groups of 6+ get 15% off any workshop", expires: "2026-12-31", code: "GROUP15" },
     ],
@@ -113,6 +129,7 @@ export const INITIAL_BUSINESSES = [
     image: "https://images.unsplash.com/photo-1481627834876-b7833e8f5570?w=600&auto=format&fit=crop&q=80",
     rating: 4.9,
     reviewCount: 152,
+    coords: [37.2143, -93.2973],
     deals: [
       { id: 8, title: "Trade-In Deal", description: "Trade in 3 books, get 1 free from our collection!", expires: "2026-12-31", code: null },
     ],
@@ -131,6 +148,7 @@ export const INITIAL_BUSINESSES = [
     image: "https://images.unsplash.com/photo-1565299585323-38d6b0865b47?w=600&auto=format&fit=crop&q=80",
     rating: 4.7,
     reviewCount: 301,
+    coords: [37.2098, -93.2847],
     deals: [
       { id: 9, title: "Taco Tuesday", description: "$2 tacos every Tuesday — no limit!", expires: "2026-12-31", code: null },
       { id: 10, title: "Family Pack", description: "Feed 4 for $35 — includes drinks and chips", expires: "2026-07-31", code: "FAMILY35" },
@@ -150,6 +168,7 @@ export const INITIAL_BUSINESSES = [
     image: "https://images.unsplash.com/photo-1416879595882-3373a0480b5b?w=600&auto=format&fit=crop&q=80",
     rating: 4.4,
     reviewCount: 78,
+    coords: [37.2031, -93.2989],
     deals: [
       { id: 11, title: "Spring Starter Kit", description: "Buy any 3 plants, get a starter soil kit free!", expires: "2026-06-30", code: "SPRING3" },
     ],

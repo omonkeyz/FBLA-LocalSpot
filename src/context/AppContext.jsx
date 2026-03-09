@@ -4,10 +4,19 @@ import { INITIAL_BUSINESSES } from '../data/businesses';
 const AppContext = createContext(null);
 
 export function AppProvider({ children }) {
-  // Business data — allow adding new businesses
+  // Business data — fall back to INITIAL_BUSINESSES if stored data lacks coords
+  // (handles stale localStorage from sessions before coords were added)
   const [businesses, setBusinesses] = useState(() => {
-    const stored = localStorage.getItem('businesses');
-    return stored ? JSON.parse(stored) : INITIAL_BUSINESSES;
+    try {
+      const stored = localStorage.getItem('businesses');
+      if (!stored) return INITIAL_BUSINESSES;
+      const parsed = JSON.parse(stored);
+      // Validate: every business should have a coords field
+      const valid = Array.isArray(parsed) && parsed.every((b) => Array.isArray(b.coords));
+      return valid ? parsed : INITIAL_BUSINESSES;
+    } catch {
+      return INITIAL_BUSINESSES;
+    }
   });
 
   // Reviews stored as { [businessId]: [{ id, author, rating, text, date }] }
