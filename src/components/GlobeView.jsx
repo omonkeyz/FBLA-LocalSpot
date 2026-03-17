@@ -435,6 +435,7 @@ export default function GlobeView({ businesses: propBusinesses }) {
   const dragTimerRef    = useRef(null);
   const lastExploreRef  = useRef(null);  // [lat, lng] of last auto-explored point
   const isExploringRef  = useRef(false);
+  const pendingBizLoadRef = useRef(null); // { lat, lng } — load businesses once camera zooms in
 
   // Hover tooltip refs
   const hoveredEntryRef = useRef(null);
@@ -551,13 +552,13 @@ export default function GlobeView({ businesses: propBusinesses }) {
     hoveredEntryRef.current = null;
     setHoveredBiz(null);
 
-    const startMs = Date.now();
-
     try {
       const { lat, lng, formatted } = await geocodeCity(cityQuery.trim());
       setCityLabel(formatted);
       setCityCoords([lat, lng]);
+      setCityBizList(null);
       lastExploreRef.current = [lat, lng];
+      pendingBizLoadRef.current = { lat, lng };
 
       const cityDir = latLngToVec3(lat, lng, 1).normalize();
       if (cameraRef.current && controlsRef.current) {
@@ -566,14 +567,6 @@ export default function GlobeView({ businesses: propBusinesses }) {
         targetCamPosRef.current = cityDir.clone().multiplyScalar(cameraRef.current.position.length());
         setTimeout(() => { targetCamPosRef.current = cityDir.clone().multiplyScalar(6); }, 1400);
       }
-
-      const elements = await findNearbyBusinesses(lat, lng, 5000);
-      const mapped   = elements.map(mapOsmPlaceToBusiness).filter(Boolean).slice(0, 60);
-      setCityBizList(mapped);
-
-      const elapsed   = Date.now() - startMs;
-      const remaining = Math.max(0, 3000 - elapsed);
-      setTimeout(() => { setShowCityMap(true); showCityMapRef.current = true; }, remaining);
     } catch (err) {
       setSearchError(err.message || 'Search failed — try a different city name.');
     } finally {
@@ -592,7 +585,6 @@ export default function GlobeView({ businesses: propBusinesses }) {
 
     setShowCityMap(false);
     showCityMapRef.current = false;
-    const startMs = Date.now();
 
     // ── Drop a visual pin at the clicked location ────────────────────────────
     if (sceneRef.current) {
@@ -649,7 +641,9 @@ export default function GlobeView({ businesses: propBusinesses }) {
     }
 
     setCityCoords([lat, lng]);
+    setCityBizList(null);
     lastExploreRef.current = [lat, lng];
+    pendingBizLoadRef.current = { lat, lng };
 
     // Reverse-geocode for label (non-blocking)
     fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`)
@@ -658,15 +652,6 @@ export default function GlobeView({ businesses: propBusinesses }) {
         const loc = data.address?.city || data.address?.town || data.address?.village || data.address?.county || data.display_name?.split(',')[0] || 'Selected Location';
         setCityLabel(loc);
       }).catch(() => {});
-
-    try {
-      const elements = await findNearbyBusinesses(lat, lng, 5000);
-      const mapped   = elements.map(mapOsmPlaceToBusiness).filter(Boolean).slice(0, 60);
-      setCityBizList(mapped);
-      const elapsed   = Date.now() - startMs;
-      const remaining = Math.max(0, 2500 - elapsed);
-      setTimeout(() => { setShowCityMap(true); showCityMapRef.current = true; }, remaining);
-    } catch { /* silent */ }
   }, []);
 
   useEffect(() => { handleGlobeClickRef.current = handleGlobePointClick; }, [handleGlobePointClick]);
@@ -888,9 +873,11 @@ export default function GlobeView({ businesses: propBusinesses }) {
       }
     };
 
-    // ── Drag-to-explore: after user stops panning, auto-load nearby businesses ──
+    // ── Drag-to-explore: after user stops panning while zoomed in, load nearby businesses ──
     const onControlsEnd = () => {
       if (showCityMapRef.current || isExploringRef.current) return;
+      // Only fetch businesses when camera is close enough to the globe
+      if (camera.position.length() >= 7.5) return;
       clearTimeout(dragTimerRef.current);
       dragTimerRef.current = setTimeout(async () => {
         // Cast center-of-screen ray to find what the camera is looking at
@@ -910,6 +897,7 @@ export default function GlobeView({ businesses: propBusinesses }) {
         isExploringRef.current = true;
         setIsExploring(true);
         lastExploreRef.current = [lat, lng];
+        pendingBizLoadRef.current = null; // cancel any pending load
 
         try {
           const elements = await findNearbyBusinesses(lat, lng, 5000);
@@ -925,11 +913,8 @@ export default function GlobeView({ businesses: propBusinesses }) {
               if (loc) setCityLabel(loc);
             }).catch(() => {});
 
-          // If already zoomed in, update the open 2D map
-          if (camera.position.length() < 6.8) {
-            setShowCityMap(true);
-            showCityMapRef.current = true;
-          }
+          setShowCityMap(true);
+          showCityMapRef.current = true;
         } catch { /* silent */ } finally {
           isExploringRef.current = false;
           setIsExploring(false);
@@ -960,10 +945,24 @@ export default function GlobeView({ businesses: propBusinesses }) {
             controls.autoRotate = false;
             controls.update();
           }
+          // Zoomed in close enough — load businesses for the pending location
+          if (pendingBizLoadRef.current && camera.position.length() < 7.5) {
+            const { lat, lng } = pendingBizLoadRef.current;
+            pendingBizLoadRef.current = null;
+            (async () => {
+              try {
+                const elements = await findNearbyBusinesses(lat, lng, 5000);
+                const mapped   = elements.map(mapOsmPlaceToBusiness).filter(Boolean).slice(0, 60);
+                setCityBizList(mapped);
+                setShowCityMap(true);
+                showCityMapRef.current = true;
+              } catch { /* silent */ }
+            })();
+          }
         }
       }
 
-      // Auto-trigger city map when zoomed close enough
+      // Auto-trigger city map when zoomed close enough (businesses already loaded)
       const dist = camera.position.length();
       if (cityBizListRef.current !== null && !showCityMapRef.current && dist < 6.8) {
         showCityMapRef.current = true;
