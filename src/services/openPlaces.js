@@ -1,19 +1,25 @@
-// Free, no-key APIs: Nominatim (geocoding) + Overpass API (business/POI data)
+// Free, no-key APIs: Nominatim (geocoding) + Overpass API via POST (business/POI data)
 
-// Multiple Overpass mirrors — tried in order on failure/timeout
+// Multiple Overpass mirrors — POST is far more reliable than GET (no URL-length limits)
 const OVERPASS_MIRRORS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
 ];
 
-// Fetch with a hard timeout (ms) using AbortController
-async function fetchWithTimeout(url, opts = {}, timeoutMs = 18000) {
+// In-memory cache: key = "lat,lng,radius" → OSM elements array
+const _cache = new Map();
+function cacheKey(lat, lng, radius) {
+  // Round to 3 decimal places (~111 m grid) so nearby searches reuse results
+  return `${lat.toFixed(3)},${lng.toFixed(3)},${radius}`;
+}
+
+// Fetch with a hard timeout using AbortController
+async function fetchWithTimeout(url, opts = {}, timeoutMs = 20000) {
   const ctrl = new AbortController();
   const tid  = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { ...opts, signal: ctrl.signal });
-    return res;
+    return await fetch(url, { ...opts, signal: ctrl.signal });
   } finally {
     clearTimeout(tid);
   }
@@ -41,49 +47,69 @@ export async function geocodeCity(cityName) {
   return { lat: parseFloat(lat), lng: parseFloat(lon), formatted };
 }
 
-// ── Build the Overpass QL query string ───────────────────────────────────────
+// ── Build Overpass QL query ───────────────────────────────────────────────────
 function buildQuery(lat, lng, radius) {
-  return `[out:json][timeout:25];(
-node["name"]["amenity"~"restaurant|cafe|bar|fast_food|pub|bakery|ice_cream|pharmacy|hospital|clinic|dentist|beauty_salon|hairdresser|cinema|theatre|nightclub|arts_centre|school|university|library|college"](around:${radius},${lat},${lng});
-node["name"]["shop"](around:${radius},${lat},${lng});
-node["name"]["leisure"~"fitness_centre|spa|gym|sports_centre"](around:${radius},${lat},${lng});
-node["name"]["tourism"~"museum|gallery|attraction"](around:${radius},${lat},${lng});
-);out center 40;`;
+  // Broad query: amenity + shop + leisure + tourism — catches everything
+  return `[out:json][timeout:30];
+(
+  node["name"]["amenity"](around:${radius},${lat},${lng});
+  node["name"]["shop"](around:${radius},${lat},${lng});
+  node["name"]["leisure"~"fitness_centre|spa|gym|sports_centre|swimming_pool"](around:${radius},${lat},${lng});
+  node["name"]["tourism"~"museum|gallery|attraction|hotel|hostel"](around:${radius},${lat},${lng});
+  way["name"]["amenity"](around:${radius},${lat},${lng});
+  way["name"]["shop"](around:${radius},${lat},${lng});
+);
+out center 60;`;
 }
 
-// ── Find businesses/POIs — tries each Overpass mirror until one succeeds ─────
+// ── POST to one Overpass mirror ───────────────────────────────────────────────
+async function tryMirror(mirror, query) {
+  const res = await fetchWithTimeout(
+    mirror,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `data=${encodeURIComponent(query)}`,
+    },
+    25000
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return (data.elements || []).filter(e => e.tags?.name);
+}
+
+// ── Find businesses — POST to mirrors, cache results ─────────────────────────
 export async function findNearbyBusinesses(lat, lng, radius = 5000) {
-  const query = buildQuery(lat, lng, radius);
-  const encoded = encodeURIComponent(query);
+  const key = cacheKey(lat, lng, radius);
+  if (_cache.has(key)) return _cache.get(key);
 
-  let lastErr;
-  for (const mirror of OVERPASS_MIRRORS) {
-    try {
-      const url = `${mirror}?data=${encoded}`;
-      const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 20000);
+  // Try a wider radius if original comes back empty
+  const radii = [radius, radius * 1.5, radius * 2.5];
 
-      if (!res.ok) {
-        // 429 = rate-limited, 504 = gateway timeout — try next mirror immediately
-        lastErr = new Error(`HTTP ${res.status} from ${mirror}`);
-        continue;
+  for (const r of radii) {
+    const query = buildQuery(lat, lng, r);
+    let lastErr;
+
+    for (const mirror of OVERPASS_MIRRORS) {
+      try {
+        const elements = await tryMirror(mirror, query);
+        if (elements.length > 0) {
+          _cache.set(key, elements);
+          return elements;
+        }
+        // empty → try next mirror
+      } catch (err) {
+        lastErr = err;
+        // timeout / HTTP error → try next mirror
       }
-
-      const data = await res.json();
-      const elements = (data.elements || []).filter(e => e.tags?.name);
-
-      // If we got results, return them
-      if (elements.length > 0) return elements;
-
-      // Empty result from this mirror → try next (different mirror may have more data)
-      lastErr = new Error('No results');
-    } catch (err) {
-      // Timeout or network error — try next mirror
-      lastErr = err;
     }
+
+    // All mirrors returned empty at this radius → widen and retry
+    console.warn(`[LocalSpot] No results at radius ${r}m, widening…`);
   }
 
-  // All mirrors failed — return empty array so the UI doesn't break
-  console.warn('[LocalSpot] All Overpass mirrors failed:', lastErr?.message);
+  console.warn('[LocalSpot] All mirrors/radii exhausted, returning []');
+  _cache.set(key, []);
   return [];
 }
 
@@ -94,8 +120,10 @@ function mapTagsToCategory(tags = {}) {
   const l = tags.leisure || '';
   const t = tags.tourism || '';
 
-  if (['restaurant','cafe','bar','fast_food','pub','bakery','ice_cream','food_court'].includes(a)) return 'food';
-  if (['pharmacy','hospital','clinic','dentist','doctors','beauty_salon','hairdresser'].includes(a)
+  if (['restaurant','cafe','bar','fast_food','pub','bakery','ice_cream',
+       'food_court','biergarten','juice_bar'].includes(a)) return 'food';
+  if (['pharmacy','hospital','clinic','dentist','doctors',
+       'beauty_salon','hairdresser'].includes(a)
     || ['fitness_centre','spa','gym','sports_centre','swimming_pool'].includes(l)) return 'health';
   if (['cinema','theatre','nightclub','arts_centre'].includes(a)
     || ['museum','gallery','attraction'].includes(t)) return 'entertainment';
