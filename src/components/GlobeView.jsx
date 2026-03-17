@@ -65,6 +65,13 @@ function CityMapOverlay({ businesses, cityCoords, onBack }) {
     setTimeout(onBack, 600);
   }, [fading, onBack]);
 
+  // Re-pan if cityCoords changes while the map is already open
+  useEffect(() => {
+    if (mapRef.current && cityCoords) {
+      mapRef.current.setView(cityCoords, 13, { animate: true });
+    }
+  }, [cityCoords]);
+
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     const center = cityCoords || businesses[0]?.coords || [39.5, -98.35];
