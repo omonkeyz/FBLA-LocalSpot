@@ -1,18 +1,25 @@
-// Free, no-key APIs: Nominatim (geocoding + bbox POI search) + Overpass POST fallback
+// Business data: Geoapify Places API (primary) + Nominatim geocoding
+const GEOAPIFY_KEY = import.meta.env.VITE_GEOAPIFY_KEY;
 
-const OVERPASS_MIRRORS = [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter',
-];
+// Geoapify category groups to fetch — broad enough to cover all business types
+const GEOAPIFY_CATEGORIES = [
+  'catering',           // restaurants, cafes, bars, fast food, bakeries
+  'commercial',         // shops, supermarkets, malls, clothing, electronics
+  'healthcare',         // pharmacies, hospitals, dentists, clinics
+  'leisure',            // gyms, cinemas, spas, bowling, parks
+  'tourism',            // museums, attractions, hotels
+  'education',          // schools, universities, libraries
+  'service',            // banks, laundry, beauty salons, repair shops
+  'entertainment',      // theatres, nightclubs, arcades
+].join(',');
 
-// In-memory cache keyed by rounded lat/lng
+// In-memory cache keyed by rounded lat/lng + radius
 const _cache = new Map();
 function cacheKey(lat, lng, radius) {
   return `${lat.toFixed(3)},${lng.toFixed(3)},${radius}`;
 }
 
-async function fetchWithTimeout(url, opts = {}, timeoutMs = 15000) {
+async function fetchWithTimeout(url, opts = {}, timeoutMs = 12000) {
   const ctrl = new AbortController();
   const tid  = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -44,154 +51,55 @@ export async function geocodeCity(cityName) {
   return { lat: parseFloat(lat), lng: parseFloat(lon), formatted };
 }
 
-// ── Nominatim bbox search (primary — same server, always fast) ────────────────
-// Searches one term (e.g. "restaurant") within a bounding box
-async function nominatimSearch(term, viewbox) {
+// ── Geoapify Places API ───────────────────────────────────────────────────────
+async function fetchGeoapify(lat, lng, radius) {
   const url =
-    `https://nominatim.openstreetmap.org/search` +
-    `?format=json&limit=50&q=${encodeURIComponent(term)}` +
-    `&bounded=1&viewbox=${viewbox}` +
-    `&addressdetails=0`;
+    `https://api.geoapify.com/v2/places` +
+    `?categories=${GEOAPIFY_CATEGORIES}` +
+    `&filter=circle:${lng},${lat},${radius}` +
+    `&limit=100` +
+    `&apiKey=${GEOAPIFY_KEY}`;
+
   const res = await fetchWithTimeout(url, {
-    headers: { 'Accept-Language': 'en-US,en', Accept: 'application/json' },
-  }, 10000);
-  if (!res.ok) return [];
+    headers: { Accept: 'application/json' },
+  }, 12000);
+
+  if (!res.ok) throw new Error(`Geoapify HTTP ${res.status}`);
   const data = await res.json();
-  return data.filter(d => d.display_name && d.lat && d.lon);
+  return data.features || [];
 }
 
-// Convert radius (metres) → viewbox string "minLng,maxLat,maxLng,minLat"
-function toViewbox(lat, lng, radiusM) {
-  const deg = (radiusM / 111320);          // rough metres → degrees
-  const dLng = deg / Math.cos(lat * Math.PI / 180);
-  return `${lng - dLng},${lat + deg},${lng + dLng},${lat - deg}`;
-}
-
-// Map a Nominatim result to our OSM-element shape so mapOsmPlaceToBusiness works
-// Nominatim uses `class` (the OSM key) and `type` (the OSM value)
-function nominatimToElement(item) {
-  const cls  = item.class || '';   // e.g. "amenity", "shop", "leisure", "tourism"
-  const type = item.type  || '';   // e.g. "restaurant", "convenience", "gym"
-  const tags = {
-    name:    item.name || item.display_name.split(',')[0].trim(),
-    amenity: cls === 'amenity' ? type : undefined,
-    shop:    cls === 'shop'    ? type : undefined,
-    leisure: cls === 'leisure' ? type : undefined,
-    tourism: cls === 'tourism' ? type : undefined,
-  };
-  return {
-    id:  item.osm_id || item.place_id,
-    lat: parseFloat(item.lat),
-    lon: parseFloat(item.lon),
-    tags,
-  };
-}
-
-// ── Overpass POST fallback ────────────────────────────────────────────────────
-function buildOverpassQuery(lat, lng, radius) {
-  return `[out:json][timeout:25];
-(
-  node["name"]["amenity"](around:${radius},${lat},${lng});
-  node["name"]["shop"](around:${radius},${lat},${lng});
-  node["name"]["leisure"~"fitness_centre|spa|gym|sports_centre"](around:${radius},${lat},${lng});
-  node["name"]["tourism"~"museum|gallery|attraction|hotel"](around:${radius},${lat},${lng});
-  way["name"]["amenity"](around:${radius},${lat},${lng});
-  way["name"]["shop"](around:${radius},${lat},${lng});
-);
-out center 60;`;
-}
-
-async function tryOverpass(lat, lng, radius) {
-  const query = buildOverpassQuery(lat, lng, radius);
-  for (const mirror of OVERPASS_MIRRORS) {
-    try {
-      const res = await fetchWithTimeout(mirror, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body:    `data=${encodeURIComponent(query)}`,
-      }, 20000);
-      if (!res.ok) continue;
-      const data = await res.json();
-      const els = (data.elements || []).filter(e => e.tags?.name);
-      if (els.length > 0) return els;
-    } catch { /* try next mirror */ }
-  }
-  return [];
-}
-
-// ── Main: Nominatim first, Overpass fallback ──────────────────────────────────
+// ── Main: find businesses near lat/lng ───────────────────────────────────────
 export async function findNearbyBusinesses(lat, lng, radius = 5000) {
   const key = cacheKey(lat, lng, radius);
   if (_cache.has(key)) return _cache.get(key);
 
-  // 1. Nominatim bbox — fire 4 searches in parallel (staggered 200 ms to respect rate limit)
-  const viewbox = toViewbox(lat, lng, radius);
-  const terms   = ['restaurant', 'shop', 'cafe', 'hotel museum bar pharmacy gym'];
-  const delay   = (ms) => new Promise(r => setTimeout(r, ms));
+  try {
+    let features = await fetchGeoapify(lat, lng, radius);
 
-  const nominatimResults = await Promise.all(
-    terms.map((term, i) => delay(i * 220).then(() => nominatimSearch(term, viewbox)))
-  );
-
-  // Deduplicate by place_id
-  const seen = new Set();
-  const nominatimElements = [];
-  for (const batch of nominatimResults) {
-    for (const item of batch) {
-      if (!seen.has(item.place_id)) {
-        seen.add(item.place_id);
-        nominatimElements.push(nominatimToElement(item));
-      }
+    // If sparse, widen radius once
+    if (features.length < 5) {
+      features = await fetchGeoapify(lat, lng, radius * 2);
     }
+
+    _cache.set(key, features);
+    return features;
+  } catch (err) {
+    console.warn('[LocalSpot] Geoapify failed:', err.message);
+    _cache.set(key, []);
+    return [];
   }
-
-  if (nominatimElements.length >= 5) {
-    _cache.set(key, nominatimElements);
-    return nominatimElements;
-  }
-
-  // 2. Nominatim came up short → try Overpass POST
-  console.info('[LocalSpot] Nominatim sparse, trying Overpass POST…');
-  const overpassElements = await tryOverpass(lat, lng, radius);
-
-  // Merge both (Nominatim + Overpass), deduplicate by name+coords
-  const merged = [...nominatimElements, ...overpassElements];
-  const nameSet = new Set(nominatimElements.map(e => e.tags.name?.toLowerCase()));
-  const combined = [
-    ...nominatimElements,
-    ...overpassElements.filter(e => !nameSet.has(e.tags?.name?.toLowerCase())),
-  ];
-
-  // If still empty, widen radius and retry Overpass
-  if (combined.length === 0) {
-    console.warn('[LocalSpot] No results, widening radius…');
-    const wider = await tryOverpass(lat, lng, radius * 2);
-    _cache.set(key, wider);
-    return wider;
-  }
-
-  _cache.set(key, combined);
-  return combined;
 }
 
-// ── Map OSM/Nominatim tags → category ────────────────────────────────────────
-function mapTagsToCategory(tags = {}) {
-  const a = tags.amenity || '';
-  const s = tags.shop    || '';
-  const l = tags.leisure || '';
-  const t = tags.tourism || '';
-
-  if (['restaurant','cafe','bar','fast_food','pub','bakery','ice_cream',
-       'food_court','biergarten'].includes(a)) return 'food';
-  if (['pharmacy','hospital','clinic','dentist','doctors',
-       'beauty_salon','hairdresser'].includes(a)
-    || ['fitness_centre','spa','gym','sports_centre'].includes(l)) return 'health';
-  if (['cinema','theatre','nightclub','arts_centre'].includes(a)
-    || ['museum','gallery','attraction'].includes(t)) return 'entertainment';
-  if (['school','university','library','college'].includes(a)) return 'education';
-  if (s) return 'retail';
-  // Guess from Nominatim type string
-  if (['bar','pub','cafe','restaurant','fast_food'].includes(a)) return 'food';
+// ── Map Geoapify feature → our category keys ─────────────────────────────────
+function geoapifyCategory(categories = []) {
+  const cats = categories.join(' ');
+  if (cats.includes('catering'))     return 'food';
+  if (cats.includes('healthcare'))   return 'health';
+  if (cats.includes('leisure') || cats.includes('entertainment') || cats.includes('sport'))
+    return 'entertainment';
+  if (cats.includes('education'))    return 'education';
+  if (cats.includes('commercial'))   return 'retail';
   return 'services';
 }
 
@@ -204,23 +112,56 @@ const FALLBACK_IMAGES = {
   services:      'https://images.unsplash.com/photo-1497366216548-37526070297c?w=600&auto=format&fit=crop&q=80',
 };
 
-// ── Convert element → business shape ─────────────────────────────────────────
-export function mapOsmPlaceToBusiness(element) {
-  const tags     = element.tags || {};
-  const category = mapTagsToCategory(tags);
-  const lat      = element.lat  ?? element.center?.lat;
-  const lng      = element.lon  ?? element.center?.lon;
+// ── Convert a Geoapify feature → our business shape ──────────────────────────
+export function mapOsmPlaceToBusiness(feature) {
+  // Accept both Geoapify GeoJSON features and raw OSM elements (fallback compat)
+  if (feature?.geometry) {
+    // Geoapify GeoJSON feature
+    const p    = feature.properties || {};
+    const cats = p.categories || [];
+    const category = geoapifyCategory(cats);
+    const [lng, lat] = feature.geometry.coordinates;
+    if (!lat || !lng || !p.name) return null;
+
+    const typeLabel = (cats[0] || 'local business')
+      .split('.').pop().replace(/_/g, ' ');
+
+    return {
+      id:          `geo_${p.place_id || Math.random()}`,
+      name:        p.name,
+      category,
+      description: `${p.name} — ${typeLabel}`,
+      address:     p.formatted || p.address_line1 || '',
+      phone:       p.contact?.phone || p.datasource?.raw?.phone || '',
+      hours:       p.opening_hours || '',
+      image:       FALLBACK_IMAGES[category],
+      rating:      0,
+      reviewCount: 0,
+      coords:      [lat, lng],
+      deals:       [],
+      tags:        cats.map(c => c.split('.').pop().replace(/_/g, ' ')).slice(0, 4),
+      verified:    false,
+      featured:    false,
+      isOsmPlace:  true,
+      website:     p.website || p.contact?.website || p.datasource?.raw?.website || '',
+    };
+  }
+
+  // Legacy OSM element (kept for backward compat with Overpass fallback)
+  const tags     = feature.tags || {};
+  const category = legacyCategory(tags);
+  const lat      = feature.lat  ?? feature.center?.lat;
+  const lng      = feature.lon  ?? feature.center?.lon;
   if (!lat || !lng || !tags.name) return null;
 
   const addr = [tags['addr:housenumber'], tags['addr:street'], tags['addr:city']]
     .filter(Boolean).join(' ');
-
   const typeLabel = (tags.amenity || tags.shop || tags.leisure || tags.tourism || 'local business')
     .replace(/_/g, ' ');
 
   return {
-    id:          `osm_${element.id}`,
-    osmId:       element.id,
+    id:          `osm_${feature.id}`,
+    osmId:       feature.id,
     name:        tags.name,
     category,
     description: `${tags.name} — ${typeLabel}`,
@@ -239,4 +180,15 @@ export function mapOsmPlaceToBusiness(element) {
     isOsmPlace:  true,
     website:     tags.website || tags['contact:website'] || '',
   };
+}
+
+function legacyCategory(tags = {}) {
+  const a = tags.amenity || '', s = tags.shop || '', l = tags.leisure || '', t = tags.tourism || '';
+  if (['restaurant','cafe','bar','fast_food','pub','bakery','ice_cream'].includes(a)) return 'food';
+  if (['pharmacy','hospital','clinic','dentist'].includes(a)
+    || ['fitness_centre','spa','gym'].includes(l)) return 'health';
+  if (['cinema','theatre','nightclub'].includes(a) || ['museum','gallery'].includes(t)) return 'entertainment';
+  if (['school','university','library'].includes(a)) return 'education';
+  if (s) return 'retail';
+  return 'services';
 }
